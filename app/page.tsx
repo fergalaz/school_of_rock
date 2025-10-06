@@ -34,10 +34,13 @@ function WorkflowForm() {
   const [apellido, setApellido] = useState<string>("")
   const [escena, setEscena] = useState<string>("teclado")
   const [email, setEmail] = useState<string>("")
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
-
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
+  // 👇 Nuevo: bandera para evitar envíos duplicados del email por run
+  const hasSentEmailRef = useRef(false)
 
   useEffect(() => {
     const clearPollingInterval = () => {
@@ -93,15 +96,20 @@ function WorkflowForm() {
     }
   }, [runId])
 
+  // 👇 Ajuste: cuando hay success, setea imageUrl y envía el correo SOLO una vez
   useEffect(() => {
     if (pollingData?.status === "success") {
       const output = pollingData.outputs?.[0]
       if (output?.url) {
         setImageUrl(output.url)
-        sendEmailWithImage(output.url)
+        if (!hasSentEmailRef.current) {
+          hasSentEmailRef.current = true
+          const userName = `${nombre} ${apellido}`.trim()
+          sendEmailWithImage(output.url, email, userName, escena)
+        }
       }
     }
-  }, [pollingData])
+  }, [pollingData, nombre, apellido, email, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -125,6 +133,7 @@ function WorkflowForm() {
       email: email,
     }
 
+    // Reset de estado para nuevo run
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -136,6 +145,7 @@ function WorkflowForm() {
     setIsPolling(false)
     setPollingError(null)
     setIsGenerating(true)
+    hasSentEmailRef.current = false // 👈 importante para un nuevo intento
 
     try {
       setMutationError(null)
@@ -168,27 +178,33 @@ function WorkflowForm() {
     }
   }
 
-  const sendEmailWithImage = async (imageUrl: string) => {
+  // 👇 Actualizado: usa claves que espera tu API (userEmail, userName, imageUrl)
+  const sendEmailWithImage = async (
+    imageUrl: string,
+    userEmail: string,
+    userName: string,
+    escenaSeleccionada?: string
+  ) => {
     try {
       const response = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageUrl,
-          userEmail: email,
-          nombre,
-          apellido,
-          escena,
+          userEmail,  // clave esperada por la API
+          userName,   // clave esperada por la API
+          escena: escenaSeleccionada, // opcional para el correo del admin
         }),
       })
 
       if (!response.ok) {
-        console.error("[v0] Failed to send email")
+        const err = await response.json().catch(() => ({}))
+        console.error("[send-email] Failed", err)
       } else {
-        console.log("[v0] Email sent successfully")
+        console.log("[send-email] OK")
       }
     } catch (error) {
-      console.error("[v0] Error sending email:", error)
+      console.error("[send-email] Error:", error)
     }
   }
 
