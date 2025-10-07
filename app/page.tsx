@@ -9,14 +9,54 @@ import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, CheckCircle, XCircle, Hourglass, Camera, Upload } from "lucide-react"
 
+type OutputItem = {
+  url?: string
+  images?: Array<{ url?: string }>
+  [key: string]: any
+}
+
 type PollData = {
   live_status?: string
   status?: "queued" | "running" | "success" | "failed" | "api_error"
-  outputs?: Array<{ url?: string; [key: string]: any }>
+  outputs?: OutputItem[]
   progress?: number
   queue_position?: number | null
   error?: any
   details?: any
+}
+
+function firstImageUrlFromOutputs(outputs?: OutputItem[] | null): string | null {
+  if (!outputs || outputs.length === 0) return null
+
+  // 1) outputs[*].images[*].url (caso ComfyDeploy típico)
+  for (const item of outputs) {
+    const imgs = item?.images
+    if (Array.isArray(imgs)) {
+      for (const img of imgs) {
+        if (img?.url && typeof img.url === "string") return img.url
+      }
+    }
+  }
+
+  // 2) outputs[*].url directo
+  for (const item of outputs) {
+    if (item?.url && typeof item.url === "string") return item.url
+  }
+
+  // 3) Busca en propiedades anidadas comunes
+  for (const item of outputs) {
+    // a) item.data?.images[*].url
+    const dataImgs = item?.data?.images
+    if (Array.isArray(dataImgs)) {
+      for (const img of dataImgs) {
+        if (img?.url && typeof img.url === "string") return img.url
+      }
+    }
+    // b) item.data?.url
+    if (item?.data?.url && typeof item.data.url === "string") return item.data.url
+  }
+
+  return null
 }
 
 function WorkflowForm() {
@@ -42,9 +82,8 @@ function WorkflowForm() {
   // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
-  // PRUEBA DE VIDA: debe aparecer siempre al cargar la página
   useEffect(() => {
-    console.log("[boot] WorkflowForm mounted v2")
+    console.log("[boot] WorkflowForm mounted v3")
   }, [])
 
   useEffect(() => {
@@ -72,8 +111,8 @@ function WorkflowForm() {
         const response = await fetch(`/api/poll?runId=${runId}`)
         const data: PollData = await response.json()
 
-        // LOG por cada tick del poll
-        console.log("[poll tick]", data.status, data.outputs?.[0]?.url)
+        const tickUrl = firstImageUrlFromOutputs(data.outputs)
+        console.log("[poll tick]", data.status, "url:", tickUrl)
 
         if (!response.ok) {
           const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
@@ -91,35 +130,27 @@ function WorkflowForm() {
       }
     }
 
+    // primer tick
     fetchAndPoll()
 
-    clearPollingInterval()
+    // limpiar previo y programar intervalo
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+    pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
-    pollIntervalRef.current = setInterval(async () => {
-      await fetchAndPoll()
-    }, 2000)
-
-    return () => {
-      clearPollingInterval()
-    }
+    return () => clearPollingInterval()
   }, [runId])
 
-  // ✅ Solo setea imageUrl cuando el poll indica éxito (leyendo la ruta correcta)
+  // ✅ cuando hay success, extrae la URL correctamente y setea imageUrl
   useEffect(() => {
-    const status = pollingData?.status
-    const computedUrl =
-      (pollingData as any)?.outputs?.[0]?.data?.images?.[0]?.url ??
-      (pollingData as any)?.outputs?.[0]?.url ??
-      null
+    const url = firstImageUrlFromOutputs(pollingData?.outputs)
+    console.log("[poll] Estado:", pollingData?.status, "firstUrl:", url)
 
-    console.log("[poll] Estado:", status, "→ url:", computedUrl)
-
-    if (status === "success" && computedUrl) {
-      setImageUrl(computedUrl)
+    if (pollingData?.status === "success" && url) {
+      setImageUrl(url)
     }
   }, [pollingData])
 
-  // ✅ Dispara el email cuando imageUrl está listo (una sola vez por run)
+  // ✅ dispara el email una sola vez cuando imageUrl está listo
   useEffect(() => {
     if (!imageUrl) return
     if (hasSentEmailRef.current) return
@@ -145,9 +176,7 @@ function WorkflowForm() {
     const file = e.target.files?.[0]
     if (file) {
       const reader = new FileReader()
-      reader.onloadend = () => {
-        setUploadedImage(reader.result as string)
-      }
+      reader.onloadend = () => setUploadedImage(reader.result as string)
       reader.readAsDataURL(file)
     }
   }
@@ -157,13 +186,13 @@ function WorkflowForm() {
 
     const inputs = {
       imagen: uploadedImage || "",
-      nombre: nombre,
-      apellido: apellido,
-      escena: escena,
-      email: email,
+      nombre,
+      apellido,
+      escena,
+      email,
     }
 
-    // Reset de estado para nuevo run
+    // Reset para nuevo run
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -178,7 +207,6 @@ function WorkflowForm() {
     hasSentEmailRef.current = false
 
     try {
-      setMutationError(null)
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -208,7 +236,7 @@ function WorkflowForm() {
     }
   }
 
-  // 👉 función reutilizable de envío
+  // envío de email
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
@@ -234,21 +262,16 @@ function WorkflowForm() {
         }),
       })
 
-      // Log visible del resultado (para verlo en Network y Console)
       const text = await response.text().catch(() => "")
       console.log("[send-email] status:", response.status, "body:", text)
 
-      if (!response.ok) {
-        console.error("[send-email] Failed")
-      } else {
-        console.log("[send-email] OK")
-      }
+      if (!response.ok) console.error("[send-email] Failed")
+      else console.log("[send-email] OK")
     } catch (error) {
       console.error("[send-email] Error:", error)
     }
   }
 
-  // 👉 botón manual de debug
   const resendNow = () => {
     if (!imageUrl) {
       console.warn("[debug] No hay imageUrl aún")
@@ -285,67 +308,32 @@ function WorkflowForm() {
               <div className="flex flex-col gap-2">
                 <Label htmlFor="imagen">Selfie</Label>
                 <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="flex-1 bg-transparent"
-                    onClick={() => cameraInputRef.current?.click()}
-                  >
+                  <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => cameraInputRef.current?.click()}>
                     <Camera className="mr-2 h-4 w-4" />
                     Tomar Foto
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="flex-1 bg-transparent"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
+                  <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => fileInputRef.current?.click()}>
                     <Upload className="mr-2 h-4 w-4" />
                     Subir Archivo
                   </Button>
                 </div>
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                />
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="user" className="hidden" onChange={handleFileUpload} />
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
                 {uploadedImage && (
                   <div className="mt-2 flex justify-center">
-                    <img
-                      src={uploadedImage || "/placeholder.svg"}
-                      alt="Uploaded selfie"
-                      className="max-h-48 rounded-md border shadow-sm"
-                    />
+                    <img src={uploadedImage || "/placeholder.svg"} alt="Uploaded selfie" className="max-h-48 rounded-md border shadow-sm" />
                   </div>
                 )}
               </div>
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="nombre">Nombre</Label>
-                <Input
-                  id="nombre"
-                  name="nombre"
-                  placeholder="Ingresa tu nombre"
-                  value={nombre}
-                  onChange={(e) => setNombre(e.target.value)}
-                  required
-                />
+                <Input id="nombre" name="nombre" placeholder="Ingresa tu nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} required />
               </div>
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="apellido">Apellido</Label>
-                <Input
-                  id="apellido"
-                  name="apellido"
-                  placeholder="Ingresa tu apellido"
-                  value={apellido}
-                  onChange={(e) => setApellido(e.target.value)}
-                  required
-                />
+                <Input id="apellido" name="apellido" placeholder="Ingresa tu apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} required />
               </div>
 
               <div className="flex flex-col gap-2">
@@ -365,15 +353,7 @@ function WorkflowForm() {
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  placeholder="Ingresa tu email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
+                <Input id="email" name="email" type="email" placeholder="Ingresa tu email" value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
 
               <div className="flex justify-end">
@@ -390,9 +370,7 @@ function WorkflowForm() {
               </div>
             </form>
 
-            {mutationError && (
-              <div className="mt-4 text-center text-sm font-medium text-red-600">Error: {mutationError}</div>
-            )}
+            {mutationError && <div className="mt-4 text-center text-sm font-medium text-red-600">Error: {mutationError}</div>}
 
             {(overallIsLoading || displayStatus) && !mutationError && (
               <div className="mt-6 flex flex-col items-center gap-2">
@@ -410,44 +388,25 @@ function WorkflowForm() {
                     {displayStatus === "success" && <CheckCircle className="h-4 w-4 text-green-500" />}
                     {displayStatus === "failed" && <XCircle className="h-4 w-4 text-red-500" />}
                     <span>Status: {pollingData?.live_status || displayStatus}</span>
-                    {displayStatus === "queued" && pollingData?.queue_position != null && (
-                      <span> (Queue: {pollingData.queue_position})</span>
-                    )}
-                    {displayStatus === "running" && pollingData?.progress != null && (
-                      <span> ({Math.round(pollingData.progress * 100)}%)</span>
-                    )}
+                    {displayStatus === "queued" && pollingData?.queue_position != null && <span> (Queue: {pollingData.queue_position})</span>}
+                    {displayStatus === "running" && pollingData?.progress != null && <span> ({Math.round((pollingData.progress ?? 0) * 100)}%)</span>}
                   </div>
                 )}
               </div>
             )}
 
-            {pollingError && !mutationError && (
-              <div className="mt-4 text-center text-sm text-red-600">Polling Error: {pollingError}</div>
-            )}
-
             {imageUrl && (
               <div className="mt-6 flex justify-center">
-                <img
-                  src={imageUrl || "/placeholder.svg"}
-                  alt="Generated output"
-                  className="max-w-full rounded-md border shadow-sm"
-                />
+                <img src={imageUrl || "/placeholder.svg"} alt="Generated output" className="max-w-full rounded-md border shadow-sm" />
               </div>
             )}
 
-            {/* 🔧 Bloque de DEBUG siempre visible cuando hay imageUrl */}
             <div className="mt-6 rounded-md border p-3">
               <div className="mb-2 text-xs text-muted-foreground">
-                <b>Debug:</b> usa este botón para disparar manualmente <code>/api/send-email</code> y
-                ver el request en la pestaña <b>Network</b> filtrando por <code>send</code>.
+                <b>Debug:</b> usa este botón para disparar manualmente <code>/api/send-email</code> y ver el request en <b>Network</b> filtrando por <code>send</code>.
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={resendNow}
-                  disabled={!imageUrl || !email}
-                >
+                <Button type="button" variant="outline" onClick={resendNow} disabled={!imageUrl || !email}>
                   Reenviar email (debug)
                 </Button>
                 <span className="text-xs text-muted-foreground">
@@ -459,9 +418,7 @@ function WorkflowForm() {
             {pollingData && (
               <details className="mt-6 w-full">
                 <summary className="cursor-pointer text-xs text-muted-foreground">View Raw Output</summary>
-                <pre className="mt-2 overflow-x-auto rounded bg-muted p-4 text-xs">
-                  {JSON.stringify(pollingData, null, 2)}
-                </pre>
+                <pre className="mt-2 overflow-x-auto rounded bg-muted p-4 text-xs">{JSON.stringify(pollingData, null, 2)}</pre>
               </details>
             )}
           </CardContent>
