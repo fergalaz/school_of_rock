@@ -42,12 +42,11 @@ function WorkflowForm() {
   // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
-  // PRUEBA DE VIDA
+  // PRUEBA DE VIDA: debe aparecer siempre al cargar la página
   useEffect(() => {
     console.log("[boot] WorkflowForm mounted v1")
   }, [])
 
-  // ---- Polling del run en ComfyDeploy ----
   useEffect(() => {
     const clearPollingInterval = () => {
       if (pollIntervalRef.current) {
@@ -65,6 +64,7 @@ function WorkflowForm() {
 
     const fetchAndPoll = async () => {
       if (!runId) return
+
       setIsPolling(true)
       setPollingError(null)
 
@@ -94,10 +94,10 @@ function WorkflowForm() {
     // primer tick inmediato
     fetchAndPoll()
 
-    // limpiar cualquier intervalo previo
+    // limpiar interval previo por si acaso
     clearPollingInterval()
 
-    // intervalo de polling
+    // re-poll cada 2s
     pollIntervalRef.current = setInterval(async () => {
       await fetchAndPoll()
     }, 2000)
@@ -107,37 +107,31 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // ✅ AJUSTE: fijar imageUrl en cuanto aparezca en outputs, sin depender de status
+  // ✅ Cuando hay éxito en el poll, setea imageUrl y envía el correo de inmediato (una sola vez por run)
   useEffect(() => {
-    const derivedUrl = pollingData?.outputs?.[0]?.url
-    console.log("[poll] status:", pollingData?.status, "derivedUrl:", derivedUrl)
+    console.log("[poll check]", pollingData?.status, pollingData?.outputs?.[0]?.url)
 
-    if (derivedUrl && !imageUrl) {
-      setImageUrl(derivedUrl)
+    if (pollingData?.status === "success") {
+      const output = pollingData.outputs?.[0]
+      if (output?.url) {
+        setImageUrl(output.url)
+
+        if (!hasSentEmailRef.current) {
+          hasSentEmailRef.current = true
+          const userName = `${nombre} ${apellido}`.trim()
+
+          console.log("[send-email trigger immediate]", {
+            imageUrl: output.url,
+            email,
+            userName,
+            escena,
+          })
+
+          sendEmailWithImage(output.url, email, userName, escena)
+        }
+      }
     }
-  }, [pollingData, imageUrl])
-
-  // ✅ Dispara el email cuando imageUrl está listo (una sola vez por run)
-  useEffect(() => {
-    if (!imageUrl) return
-    if (hasSentEmailRef.current) return
-    if (!email) {
-      console.warn("[send-email] Abort: email vacío")
-      return
-    }
-
-    hasSentEmailRef.current = true
-    const userName = `${nombre} ${apellido}`.trim()
-
-    console.log("[send-email trigger by imageUrl]", {
-      imageUrl,
-      email,
-      userName,
-      escena,
-    })
-
-    sendEmailWithImage(imageUrl, email, userName, escena)
-  }, [imageUrl, email, nombre, apellido, escena])
+  }, [pollingData, nombre, apellido, email, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -186,8 +180,7 @@ function WorkflowForm() {
 
       if (!res.ok) {
         const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
-        const errorDetails =
-          (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
+        const errorDetails = (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
         throw new Error(`${errorMsg} - ${errorDetails}`)
       }
 
@@ -207,7 +200,7 @@ function WorkflowForm() {
     }
   }
 
-  // ---- Envío de email al backend ----
+  // Usa las claves que espera tu API (userEmail, userName, imageUrl)
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
