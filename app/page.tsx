@@ -42,6 +42,11 @@ function WorkflowForm() {
   // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
+  // PRUEBA DE VIDA: debe aparecer siempre al cargar la página
+  useEffect(() => {
+    console.log("[boot] WorkflowForm mounted v1")
+  }, [])
+
   useEffect(() => {
     const clearPollingInterval = () => {
       if (pollIntervalRef.current) {
@@ -67,8 +72,11 @@ function WorkflowForm() {
         const response = await fetch(`/api/poll?runId=${runId}`)
         const data: PollData = await response.json()
 
+        // LOG por cada tick del poll
+        console.log("[poll tick]", data.status, data.outputs?.[0]?.url)
+
         if (!response.ok) {
-          const errorMsg = data.error || `Poll API Error: ${response.status}`
+          const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
           setPollingError(errorMsg)
           setPollingData({ ...data, status: "api_error", live_status: errorMsg })
         } else {
@@ -98,7 +106,7 @@ function WorkflowForm() {
 
   // Cuando hay success, setea imageUrl y envía el correo SOLO una vez
   useEffect(() => {
-    // 👇 Línea añadida de debug
+    // Debug del estado actual
     console.log("[poll] Estado actual:", pollingData?.status, "outputs[0].url:", pollingData?.outputs?.[0]?.url)
 
     if (pollingData?.status === "success") {
@@ -108,6 +116,15 @@ function WorkflowForm() {
         if (!hasSentEmailRef.current) {
           hasSentEmailRef.current = true
           const userName = `${nombre} ${apellido}`.trim()
+
+          // Log de disparo de envío
+          console.log("[send-email trigger]", {
+            url: output.url,
+            email,
+            userName,
+            escena
+          })
+
           sendEmailWithImage(output.url, email, userName, escena)
         }
       }
@@ -160,8 +177,8 @@ function WorkflowForm() {
       const responseData = await res.json()
 
       if (!res.ok) {
-        const errorMsg = responseData.error || `API Error: ${res.status}`
-        const errorDetails = responseData.details ? JSON.stringify(responseData.details) : "No details"
+        const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
+        const errorDetails = (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
         throw new Error(`${errorMsg} - ${errorDetails}`)
       }
 
