@@ -104,15 +104,18 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // ✅ Solo setea imageUrl cuando el poll indica éxito
+  // ✅ Solo setea imageUrl cuando el poll indica éxito (leyendo la ruta correcta)
   useEffect(() => {
-    console.log("[poll] Estado actual:", pollingData?.status, "outputs[0].url:", pollingData?.outputs?.[0]?.url)
+    const status = pollingData?.status
+    const computedUrl =
+      (pollingData as any)?.outputs?.[0]?.data?.images?.[0]?.url ??
+      (pollingData as any)?.outputs?.[0]?.url ??
+      null
 
-    if (pollingData?.status === "success") {
-      const output = pollingData.outputs?.[0]
-      if (output?.url) {
-        setImageUrl(output.url)
-      }
+    console.log("[poll] Estado:", status, "→ url:", computedUrl)
+
+    if (status === "success" && computedUrl) {
+      setImageUrl(computedUrl)
     }
   }, [pollingData])
 
