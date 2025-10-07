@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     const userPayload: any = {
       from: FROM_EMAIL,
       to: userEmail,
-      subject: `¡Tu foto como Rock Star está lista, ${firstName}!`,
+      subject: `¡Tu foto como Rockstar está lista, ${firstName}!`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
           <h1 style="color:#e63946;text-align:center;">¡Bienvenido a School of Rock!</h1>
