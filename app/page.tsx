@@ -45,14 +45,12 @@ function firstImageUrlFromOutputs(outputs?: OutputItem[] | null): string | null 
 
   // 3) Busca en propiedades anidadas comunes
   for (const item of outputs) {
-    // a) item.data?.images[*].url
     const dataImgs = item?.data?.images
     if (Array.isArray(dataImgs)) {
       for (const img of dataImgs) {
         if (img?.url && typeof img.url === "string") return img.url
       }
     }
-    // b) item.data?.url
     if (item?.data?.url && typeof item.data.url === "string") return item.data.url
   }
 
@@ -79,7 +77,6 @@ function WorkflowForm() {
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
   useEffect(() => {
@@ -130,17 +127,13 @@ function WorkflowForm() {
       }
     }
 
-    // primer tick
     fetchAndPoll()
-
-    // limpiar previo y programar intervalo
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
     return () => clearPollingInterval()
   }, [runId])
 
-  // ✅ cuando hay success, extrae la URL correctamente y setea imageUrl
   useEffect(() => {
     const url = firstImageUrlFromOutputs(pollingData?.outputs)
     console.log("[poll] Estado:", pollingData?.status, "firstUrl:", url)
@@ -150,7 +143,6 @@ function WorkflowForm() {
     }
   }, [pollingData])
 
-  // ✅ dispara el email una sola vez cuando imageUrl está listo
   useEffect(() => {
     if (!imageUrl) return
     if (hasSentEmailRef.current) return
@@ -192,7 +184,6 @@ function WorkflowForm() {
       email,
     }
 
-    // Reset para nuevo run
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -236,7 +227,6 @@ function WorkflowForm() {
     }
   }
 
-  // envío de email
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
@@ -301,12 +291,12 @@ function WorkflowForm() {
 
         <Card className="w-full border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-center text-2xl">Conviértete en Rock Star</CardTitle>
+            <CardTitle className="text-center text-2xl">Conviértete en Rockstar</CardTitle>
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="imagen">Selfie</Label>
+                <Label htmlFor="imagen">Sube una selfie</Label>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => cameraInputRef.current?.click()}>
                     <Camera className="mr-2 h-4 w-4" />
@@ -338,13 +328,19 @@ function WorkflowForm() {
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="escena">¿Qué instrumento vas a tocar?</Label>
-                <Select value={escena} onValueChange={setEscena}>
+                <Select
+                  value={escena}
+                  onValueChange={(val) => {
+                    const clean = val.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                    setEscena(clean)
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Selecciona una escena" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="teclado">Teclado</SelectItem>
-                    <SelectItem value="batería">Batería</SelectItem>
+                    <SelectItem value="bateria">Batería</SelectItem>
                     <SelectItem value="guitarra">Guitarra</SelectItem>
                     <SelectItem value="voz">Voz</SelectItem>
                   </SelectContent>
