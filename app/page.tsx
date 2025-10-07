@@ -1,18 +1,18 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
-import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Loader2, CheckCircle, XCircle, Hourglass, Camera, Upload } from "lucide-react"
+import { Camera, CheckCircle, Hourglass, Loader2, Upload, XCircle } from "lucide-react"
 
 type PollData = {
   live_status?: string
   status?: "queued" | "running" | "success" | "failed" | "api_error"
-  outputs?: Array<{ url?: string; images?: Array<{ url?: string }>; [key: string]: any }>
+  outputs?: Array<{ url?: string; [key: string]: any }>
   progress?: number
   queue_position?: number | null
   error?: any
@@ -22,8 +22,8 @@ type PollData = {
 function WorkflowForm() {
   const [runId, setRunId] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
-  const [mutationError, setMutationError] = useState<string | null>(null)
 
+  const [mutationError, setMutationError] = useState<string | null>(null)
   const [pollingData, setPollingData] = useState<PollData | null>(null)
   const [isPolling, setIsPolling] = useState<boolean>(false)
   const [pollingError, setPollingError] = useState<string | null>(null)
@@ -32,20 +32,13 @@ function WorkflowForm() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [nombre, setNombre] = useState<string>("")
   const [apellido, setApellido] = useState<string>("")
-  const [escena, setEscena] = useState<string>("teclado")
+  const [escena, setEscena] = useState<string>("teclado") // UI muestra con tilde, pero valor es minúscula sin tildes
   const [email, setEmail] = useState<string>("")
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-
-  // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
-
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log("[boot] WorkflowForm mounted")
-  }, [])
 
   useEffect(() => {
     const clearPollingInterval = () => {
@@ -66,13 +59,9 @@ function WorkflowForm() {
       if (!runId) return
       setIsPolling(true)
       setPollingError(null)
-
       try {
-        const response = await fetch(`/api/poll?runId=${runId}`)
+        const response = await fetch(`/api/poll?runId=${runId}`, { cache: "no-store" })
         const data: PollData = await response.json()
-
-        // eslint-disable-next-line no-console
-        console.log("[poll tick]", data.status, data.outputs?.[0]?.url || data.outputs?.[0]?.images?.[0]?.url)
 
         if (!response.ok) {
           const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
@@ -90,8 +79,10 @@ function WorkflowForm() {
       }
     }
 
+    // primer tick
     fetchAndPoll()
-    clearPollingInterval()
+    // refresco periódico
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
     return () => {
@@ -99,40 +90,25 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // Extrae URL en cualquiera de los dos formatos
-  const extractUrl = (p?: PollData): string | null => {
-    const out = p?.outputs?.[0]
-    return out?.url || out?.images?.[0]?.url || null
-  }
-
-  // Solo setea imageUrl cuando el poll indica éxito (o ya viene con url enriquecida)
+  // Cuando el poll indica éxito, guardar URL
   useEffect(() => {
-    const url = extractUrl(pollingData)
-    // eslint-disable-next-line no-console
-    console.log("[poll] Estado actual:", pollingData?.status, "url:", url)
-
-    if (pollingData?.status === "success" && url) {
-      setImageUrl(url)
+    if (pollingData?.status === "success") {
+      const output = pollingData.outputs?.[0]
+      if (output?.url) {
+        setImageUrl(output.url)
+      }
     }
   }, [pollingData])
 
-  // Dispara el email cuando imageUrl está listo (una sola vez por run)
+  // Cuando imageUrl esté listo, enviar email una sola vez
   useEffect(() => {
     if (!imageUrl) return
     if (hasSentEmailRef.current) return
-    if (!email) {
-      // eslint-disable-next-line no-console
-      console.warn("[send-email] Abort: email vacío")
-      return
-    }
+    if (!email) return
 
     hasSentEmailRef.current = true
     const userName = `${nombre} ${apellido}`.trim()
-
-    // eslint-disable-next-line no-console
-    console.log("[send-email trigger by imageUrl]", { imageUrl, email, userName, escena })
-
-    sendEmailWithImage(imageUrl, email, userName, escena)
+    void sendEmailWithImage(imageUrl, email, userName, escena)
   }, [imageUrl, email, nombre, apellido, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -149,19 +125,17 @@ function WorkflowForm() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
-    // Mapear UI → valores en minúscula para Comfy (pero mostramos con tildes en la UI)
-    // teclado, guitarra, bateria, voz
-    const escenaParaApi = escena // ya está controlado en el Select
-
+    // Enviar SIEMPRE valores en minúsculas/sin tildes a Comfy:
+    // teclado | guitarra | bateria | voz
     const inputs = {
       imagen: uploadedImage || "",
       nombre,
       apellido,
-      escena: escenaParaApi,
+      escena, // ya está en minúsculas y sin tildes
       email,
     }
 
-    // Reset de estado para nuevo run
+    // reset de estado por nuevo run
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -205,17 +179,14 @@ function WorkflowForm() {
     }
   }
 
-  // función de envío
-  const sendEmailWithImage = async (
+  // envío de email
+  async function sendEmailWithImage(
     imageUrl: string,
     userEmail: string,
     userName: string,
     escenaSeleccionada?: string
-  ) => {
+  ) {
     try {
-      // eslint-disable-next-line no-console
-      console.log("[send-email] POST /api/send-email payload:", { imageUrl, userEmail, userName, escena: escenaSeleccionada })
-
       const response = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -226,13 +197,10 @@ function WorkflowForm() {
           escena: escenaSeleccionada,
         }),
       })
-
-      const text = await response.text().catch(() => "")
-      // eslint-disable-next-line no-console
-      console.log("[send-email] status:", response.status, "body:", text)
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error("[send-email] Error:", error)
+      // opcional: podrías leer el body para debug
+      await response.text().catch(() => "")
+    } catch {
+      // silencioso: no bloquear la UI
     }
   }
 
@@ -304,7 +272,7 @@ function WorkflowForm() {
                   name="nombre"
                   placeholder="Ingresa tu nombre"
                   value={nombre}
-                  onChange={(e) => setNombre(e.target value)}
+                  onChange={(e) => setNombre(e.target.value)}
                   required
                 />
               </div>
@@ -328,7 +296,7 @@ function WorkflowForm() {
                     <SelectValue placeholder="Selecciona una escena" />
                   </SelectTrigger>
                   <SelectContent>
-                    {/* UI con tildes, pero el valor que se envía a la API queda en minúscula */}
+                    {/* UI en español; valores normalizados */}
                     <SelectItem value="teclado">Teclado</SelectItem>
                     <SelectItem value="bateria">Batería</SelectItem>
                     <SelectItem value="guitarra">Guitarra</SelectItem>
@@ -388,7 +356,7 @@ function WorkflowForm() {
                       <span> (Queue: {pollingData.queue_position})</span>
                     )}
                     {displayStatus === "running" && pollingData?.progress != null && (
-                      <span> ({Math.round((pollingData.progress ?? 0) * 100)}%)</span>
+                      <span> ({Math.round(pollingData.progress * 100)}%)</span>
                     )}
                   </div>
                 )}
@@ -407,6 +375,15 @@ function WorkflowForm() {
                   className="max-w-full rounded-md border shadow-sm"
                 />
               </div>
+            )}
+
+            {pollingData && (
+              <details className="mt-6 w-full">
+                <summary className="cursor-pointer text-xs text-muted-foreground">View Raw Output</summary>
+                <pre className="mt-2 overflow-x-auto rounded bg-muted p-4 text-xs">
+                  {JSON.stringify(pollingData, null, 2)}
+                </pre>
+              </details>
             )}
           </CardContent>
         </Card>
