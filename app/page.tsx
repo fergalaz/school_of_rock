@@ -39,7 +39,7 @@ function WorkflowForm() {
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  // 👇 Nuevo: bandera para evitar envíos duplicados del email por run
+  // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
   useEffect(() => {
@@ -96,8 +96,11 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // 👇 Ajuste: cuando hay success, setea imageUrl y envía el correo SOLO una vez
+  // Cuando hay success, setea imageUrl y envía el correo SOLO una vez
   useEffect(() => {
+    // 👇 Línea añadida de debug
+    console.log("[poll] Estado actual:", pollingData?.status, "outputs[0].url:", pollingData?.outputs?.[0]?.url)
+
     if (pollingData?.status === "success") {
       const output = pollingData.outputs?.[0]
       if (output?.url) {
@@ -145,7 +148,7 @@ function WorkflowForm() {
     setIsPolling(false)
     setPollingError(null)
     setIsGenerating(true)
-    hasSentEmailRef.current = false // 👈 importante para un nuevo intento
+    hasSentEmailRef.current = false
 
     try {
       setMutationError(null)
@@ -178,7 +181,7 @@ function WorkflowForm() {
     }
   }
 
-  // 👇 Actualizado: usa claves que espera tu API (userEmail, userName, imageUrl)
+  // Usa las claves que espera tu API (userEmail, userName, imageUrl)
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
@@ -191,9 +194,9 @@ function WorkflowForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageUrl,
-          userEmail,  // clave esperada por la API
-          userName,   // clave esperada por la API
-          escena: escenaSeleccionada, // opcional para el correo del admin
+          userEmail,
+          userName,
+          escena: escenaSeleccionada,
         }),
       })
 
