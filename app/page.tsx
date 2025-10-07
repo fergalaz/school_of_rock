@@ -104,32 +104,39 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // Cuando hay success, setea imageUrl y envía el correo SOLO una vez
+  // ✅ Solo setea imageUrl cuando el poll indica éxito
   useEffect(() => {
-    // Debug del estado actual
     console.log("[poll] Estado actual:", pollingData?.status, "outputs[0].url:", pollingData?.outputs?.[0]?.url)
 
     if (pollingData?.status === "success") {
       const output = pollingData.outputs?.[0]
       if (output?.url) {
         setImageUrl(output.url)
-        if (!hasSentEmailRef.current) {
-          hasSentEmailRef.current = true
-          const userName = `${nombre} ${apellido}`.trim()
-
-          // Log de disparo de envío
-          console.log("[send-email trigger]", {
-            url: output.url,
-            email,
-            userName,
-            escena
-          })
-
-          sendEmailWithImage(output.url, email, userName, escena)
-        }
       }
     }
-  }, [pollingData, nombre, apellido, email, escena])
+  }, [pollingData])
+
+  // ✅ Dispara el email cuando imageUrl está listo (una sola vez por run)
+  useEffect(() => {
+    if (!imageUrl) return
+    if (hasSentEmailRef.current) return
+    if (!email) {
+      console.warn("[send-email] Abort: email vacío")
+      return
+    }
+
+    hasSentEmailRef.current = true
+    const userName = `${nombre} ${apellido}`.trim()
+
+    console.log("[send-email trigger by imageUrl]", {
+      imageUrl,
+      email,
+      userName,
+      escena,
+    })
+
+    sendEmailWithImage(imageUrl, email, userName, escena)
+  }, [imageUrl, email, nombre, apellido, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
