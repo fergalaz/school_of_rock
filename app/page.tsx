@@ -42,9 +42,9 @@ function WorkflowForm() {
   // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
-  // PRUEBA DE VIDA: debe aparecer siempre al cargar la página
+  // Vida
   useEffect(() => {
-    console.log("[boot] WorkflowForm mounted v1")
+    console.log("[boot] WorkflowForm mounted")
   }, [])
 
   useEffect(() => {
@@ -57,6 +57,7 @@ function WorkflowForm() {
     }
 
     if (!runId) {
+      console.log("[poll] no runId -> limpiar")
       clearPollingInterval()
       setPollingData(null)
       return
@@ -73,7 +74,12 @@ function WorkflowForm() {
         const data: PollData = await response.json()
 
         // LOG por cada tick del poll
-        console.log("[poll tick]", data.status, data.outputs?.[0]?.url)
+        console.log("[poll tick]", {
+          status: data.status,
+          live_status: data.live_status,
+          outputUrl: data.outputs?.[0]?.url,
+          progress: data.progress,
+        })
 
         if (!response.ok) {
           const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
@@ -84,20 +90,20 @@ function WorkflowForm() {
         }
 
         if (data.status === "success" || data.status === "failed") {
+          console.log("[poll] terminal status -> clearInterval()", data.status)
           clearPollingInterval()
         }
       } catch (err: any) {
+        console.error("[poll] catch", err)
         setPollingError(err.message || "Polling failed unexpectedly.")
       }
     }
 
-    // primer tick inmediato
+    // primera llamada
     fetchAndPoll()
 
-    // limpiar interval previo por si acaso
+    // refresco
     clearPollingInterval()
-
-    // re-poll cada 2s
     pollIntervalRef.current = setInterval(async () => {
       await fetchAndPoll()
     }, 2000)
@@ -107,31 +113,53 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // ✅ Cuando hay éxito en el poll, setea imageUrl y envía el correo de inmediato (una sola vez por run)
+  // ✅ Solo setea imageUrl cuando el poll indica éxito
   useEffect(() => {
-    console.log("[poll check]", pollingData?.status, pollingData?.outputs?.[0]?.url)
+    console.log("[poll->imageUrl watcher]", {
+      status: pollingData?.status,
+      outputUrl: pollingData?.outputs?.[0]?.url,
+    })
 
     if (pollingData?.status === "success") {
       const output = pollingData.outputs?.[0]
       if (output?.url) {
+        console.log("[imageUrl] set", output.url)
         setImageUrl(output.url)
-
-        if (!hasSentEmailRef.current) {
-          hasSentEmailRef.current = true
-          const userName = `${nombre} ${apellido}`.trim()
-
-          console.log("[send-email trigger immediate]", {
-            imageUrl: output.url,
-            email,
-            userName,
-            escena,
-          })
-
-          sendEmailWithImage(output.url, email, userName, escena)
-        }
+      } else {
+        console.warn("[imageUrl] success pero SIN url en outputs[0]")
       }
     }
-  }, [pollingData, nombre, apellido, email, escena])
+  }, [pollingData])
+
+  // ✅ Dispara el email cuando imageUrl está listo (una sola vez por run)
+  useEffect(() => {
+    console.log("[imageUrl watcher]", { imageUrl, email, alreadySent: hasSentEmailRef.current })
+
+    if (!imageUrl) {
+      console.log("[send-email] bloqueado: no hay imageUrl")
+      return
+    }
+    if (hasSentEmailRef.current) {
+      console.log("[send-email] bloqueado: ya se envió para este run")
+      return
+    }
+    if (!email) {
+      console.warn("[send-email] bloqueado: email vacío")
+      return
+    }
+
+    hasSentEmailRef.current = true
+    const userName = `${nombre} ${apellido}`.trim()
+
+    console.log("[send-email trigger by imageUrl]", {
+      imageUrl,
+      email,
+      userName,
+      escena,
+    })
+
+    sendEmailWithImage(imageUrl, email, userName, escena)
+  }, [imageUrl, email, nombre, apellido, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -178,6 +206,8 @@ function WorkflowForm() {
       })
       const responseData = await res.json()
 
+      console.log("[generate->response]", responseData)
+
       if (!res.ok) {
         const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
         const errorDetails = (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
@@ -185,6 +215,7 @@ function WorkflowForm() {
       }
 
       if (responseData && typeof responseData.run_id === "string" && responseData.run_id.length > 0) {
+        console.log("[generate] run_id", responseData.run_id)
         setRunId(responseData.run_id)
         setImageUrl(null)
         setPollingData(null)
@@ -194,13 +225,14 @@ function WorkflowForm() {
         setRunId(null)
       }
     } catch (error: any) {
+      console.error("[generate] catch", error)
       setMutationError(error.message)
     } finally {
       setIsGenerating(false)
     }
   }
 
-  // Usa las claves que espera tu API (userEmail, userName, imageUrl)
+  // ---- helper para enviar email ----
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
@@ -208,6 +240,7 @@ function WorkflowForm() {
     escenaSeleccionada?: string
   ) => {
     try {
+      console.log("[send-email] POST /api/send-email")
       const response = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -223,7 +256,8 @@ function WorkflowForm() {
         const err = await response.json().catch(() => ({}))
         console.error("[send-email] Failed", err)
       } else {
-        console.log("[send-email] OK")
+        const ok = await response.json().catch(() => ({}))
+        console.log("[send-email] OK", ok)
       }
     } catch (error) {
       console.error("[send-email] Error:", error)
@@ -233,6 +267,17 @@ function WorkflowForm() {
   const displayStatus = pollingData?.status
   const overallIsLoading =
     isGenerating || (isPolling && !!runId && displayStatus !== "success" && displayStatus !== "failed")
+
+  // ---- botón debug para reenviar manualmente ----
+  const handleDebugResend = () => {
+    if (!imageUrl) {
+      console.warn("[debug-resend] No hay imageUrl aún")
+      return
+    }
+    const userName = `${nombre} ${apellido}`.trim()
+    console.log("[debug-resend] forcing POST /api/send-email", { imageUrl, email, userName, escena })
+    sendEmailWithImage(imageUrl, email, userName, escena)
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
@@ -393,13 +438,22 @@ function WorkflowForm() {
             )}
 
             {imageUrl && (
-              <div className="mt-6 flex justify-center">
-                <img
-                  src={imageUrl || "/placeholder.svg"}
-                  alt="Generated output"
-                  className="max-w-full rounded-md border shadow-sm"
-                />
-              </div>
+              <>
+                <div className="mt-6 flex justify-center">
+                  <img
+                    src={imageUrl || "/placeholder.svg"}
+                    alt="Generated output"
+                    className="max-w-full rounded-md border shadow-sm"
+                  />
+                </div>
+
+                {/* Botón de diagnóstico: reintenta el envío manualmente */}
+                <div className="mt-4 flex justify-center">
+                  <Button type="button" variant="outline" size="sm" onClick={handleDebugResend}>
+                    Reenviar email (debug)
+                  </Button>
+                </div>
+              </>
             )}
 
             {pollingData && (
