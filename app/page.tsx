@@ -12,11 +12,13 @@ import { Loader2, CheckCircle, XCircle, Hourglass, Camera, Upload } from "lucide
 type PollData = {
   live_status?: string
   status?: "queued" | "running" | "success" | "failed" | "api_error"
-  outputs?: Array<{ url?: string; [key: string]: any }>
+  // outputs puede venir en diferentes formatos según ComfyDeploy
+  outputs?: Array<{ url?: string; image?: string; images?: Array<{ url?: string }>; [key: string]: any }>
   progress?: number
   queue_position?: number | null
   error?: any
   details?: any
+  _detected_url?: string | null // puede venir desde nuestra API /poll
 }
 
 function WorkflowForm() {
@@ -32,19 +34,17 @@ function WorkflowForm() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [nombre, setNombre] = useState<string>("")
   const [apellido, setApellido] = useState<string>("")
-  const [escena, setEscena] = useState<string>("teclado")
+  const [escena, setEscena] = useState<string>("teclado") // UI mantiene acentos y mayúsculas si los tuviera
   const [email, setEmail] = useState<string>("")
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Evita enviar email más de una vez por run
   const hasSentEmailRef = useRef(false)
 
-  useEffect(() => {
-    console.log("[boot] WorkflowForm mounted v3 (serverSend enabled)")
-  }, [])
-
+  // --- Polling del run ---
   useEffect(() => {
     const clearPollingInterval = () => {
       if (pollIntervalRef.current) {
@@ -62,26 +62,12 @@ function WorkflowForm() {
 
     const fetchAndPoll = async () => {
       if (!runId) return
-
       setIsPolling(true)
       setPollingError(null)
 
       try {
-        // 🔧 Incluimos los datos del usuario para el envío server-side
-        const params = new URLSearchParams({
-          runId,
-          email,
-          userName: `${nombre} ${apellido}`.trim(),
-          nombre,
-          apellido,
-          escena,
-          serverSend: "1",
-        })
-
-        const response = await fetch(`/api/poll?${params.toString()}`)
+        const response = await fetch(`/api/poll?runId=${runId}`, { cache: "no-store" })
         const data: PollData = await response.json()
-
-        console.log("[poll tick]", data.status, data.outputs?.[0]?.url)
 
         if (!response.ok) {
           const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
@@ -99,23 +85,61 @@ function WorkflowForm() {
       }
     }
 
+    // primera lectura
     fetchAndPoll()
 
+    // evita dobles intervalos
     clearPollingInterval()
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
     return () => {
       clearPollingInterval()
     }
-  }, [runId, email, nombre, apellido, escena])
+  }, [runId])
 
+  // --- Detecta la URL del output en múltiples formatos y setea imageUrl ---
   useEffect(() => {
-    if (pollingData?.status === "success") {
-      const output = pollingData.outputs?.[0]
-      if (output?.url) setImageUrl(output.url)
+    if (!pollingData) return
+
+    const extractUrl = (o: any): string | null => {
+      if (!o) return null
+      return (
+        o.url ||
+        o.image ||
+        (Array.isArray(o.images) ? o.images[0]?.url : null) ||
+        null
+      )
+    }
+
+    // intenta primero la pista que nos mandó el backend (_detected_url)
+    const urlFromBackend = pollingData._detected_url || null
+
+    // luego intenta leer del primer output o de cualquiera
+    const urlFromOutputs =
+      extractUrl(pollingData.outputs?.[0]) ||
+      (Array.isArray(pollingData.outputs)
+        ? (pollingData.outputs.map(extractUrl).find(Boolean) as string | undefined)
+        : null)
+
+    const finalUrl = urlFromBackend || urlFromOutputs || null
+
+    if (pollingData.status === "success" && finalUrl) {
+      setImageUrl(finalUrl)
     }
   }, [pollingData])
 
+  // --- Envía el correo una vez que tenemos imageUrl ---
+  useEffect(() => {
+    if (!imageUrl) return
+    if (hasSentEmailRef.current) return
+    if (!email) return
+
+    hasSentEmailRef.current = true
+    const userName = `${nombre} ${apellido}`.trim()
+    sendEmailWithImage(imageUrl, email, userName, escena)
+  }, [imageUrl, email, nombre, apellido, escena])
+
+  // --- Handlers ---
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
@@ -130,14 +154,19 @@ function WorkflowForm() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
+    // Normaliza la escena para ComfyDeploy: minúsculas y "bateria" sin tilde
+    const escenaInput =
+      escena.toLowerCase() === "batería" ? "bateria" : escena.toLowerCase()
+
     const inputs = {
       imagen: uploadedImage || "",
       nombre,
       apellido,
-      escena,
+      escena: escenaInput, // ← lo que consume ComfyDeploy
       email,
     }
 
+    // Reset de estado para un nuevo run
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -152,6 +181,7 @@ function WorkflowForm() {
     hasSentEmailRef.current = false
 
     try {
+      setMutationError(null)
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -161,18 +191,52 @@ function WorkflowForm() {
 
       if (!res.ok) {
         const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
-        throw new Error(errorMsg)
+        const errorDetails = (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
+        throw new Error(`${errorMsg} - ${errorDetails}`)
       }
 
-      if (responseData.run_id) {
+      if (responseData && typeof responseData.run_id === "string" && responseData.run_id.length > 0) {
         setRunId(responseData.run_id)
+        setImageUrl(null)
+        setPollingData(null)
+        setPollingError(null)
       } else {
-        setMutationError("Failed to start run: run_id missing.")
+        setMutationError(`Failed to start run: run_id missing. Response: ${JSON.stringify(responseData)}`)
+        setRunId(null)
       }
     } catch (error: any) {
       setMutationError(error.message)
     } finally {
       setIsGenerating(false)
+    }
+  }
+
+  // --- Envío de email ---
+  const sendEmailWithImage = async (
+    imageUrl: string,
+    userEmail: string,
+    userName: string,
+    escenaSeleccionada?: string
+  ) => {
+    try {
+      const response = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl,
+          userEmail,
+          userName,
+          escena: escenaSeleccionada,
+        }),
+      })
+
+      // (opcional) podrías registrar algo si falla
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        console.error("[send-email] Failed", err)
+      }
+    } catch (error) {
+      console.error("[send-email] Error:", error)
     }
   }
 
@@ -265,11 +329,12 @@ function WorkflowForm() {
                 <Label htmlFor="escena">¿Qué instrumento vas a tocar?</Label>
                 <Select value={escena} onValueChange={setEscena}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Selecciona un instrumento" />
+                    <SelectValue placeholder="Selecciona una escena" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* Los textos permanecen como en la UI, pero al enviar se normalizan */}
                     <SelectItem value="teclado">Teclado</SelectItem>
-                    <SelectItem value="bateria">Batería</SelectItem>
+                    <SelectItem value="batería">Batería</SelectItem>
                     <SelectItem value="guitarra">Guitarra</SelectItem>
                     <SelectItem value="voz">Voz</SelectItem>
                   </SelectContent>
@@ -309,6 +374,12 @@ function WorkflowForm() {
 
             {(overallIsLoading || displayStatus) && !mutationError && (
               <div className="mt-6 flex flex-col items-center gap-2">
+                {overallIsLoading && !displayStatus && (
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>{isGenerating ? "Queuing run..." : "Initializing poll..."}</span>
+                  </div>
+                )}
                 {displayStatus && (
                   <div className="flex items-center justify-center gap-2 text-sm capitalize text-muted-foreground">
                     {displayStatus === "queued" && <Hourglass className="h-4 w-4 animate-pulse text-amber-500" />}
@@ -317,6 +388,12 @@ function WorkflowForm() {
                     {displayStatus === "success" && <CheckCircle className="h-4 w-4 text-green-500" />}
                     {displayStatus === "failed" && <XCircle className="h-4 w-4 text-red-500" />}
                     <span>Status: {pollingData?.live_status || displayStatus}</span>
+                    {displayStatus === "queued" && pollingData?.queue_position != null && (
+                      <span> (Queue: {pollingData.queue_position})</span>
+                    )}
+                    {displayStatus === "running" && pollingData?.progress != null && (
+                      <span> ({Math.round(pollingData.progress * 100)}%)</span>
+                    )}
                   </div>
                 )}
               </div>
@@ -334,6 +411,15 @@ function WorkflowForm() {
                   className="max-w-full rounded-md border shadow-sm"
                 />
               </div>
+            )}
+
+            {pollingData && (
+              <details className="mt-6 w-full">
+                <summary className="cursor-pointer text-xs text-muted-foreground">View Raw Output</summary>
+                <pre className="mt-2 overflow-x-auto rounded bg-muted p-4 text-xs">
+                  {JSON.stringify(pollingData, null, 2)}
+                </pre>
+              </details>
             )}
           </CardContent>
         </Card>
