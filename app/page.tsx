@@ -42,11 +42,12 @@ function WorkflowForm() {
   // Evitar envíos duplicados del email por run
   const hasSentEmailRef = useRef(false)
 
-  // PRUEBA DE VIDA: debe aparecer siempre al cargar la página
+  // PRUEBA DE VIDA
   useEffect(() => {
     console.log("[boot] WorkflowForm mounted v1")
   }, [])
 
+  // ---- Polling del run en ComfyDeploy ----
   useEffect(() => {
     const clearPollingInterval = () => {
       if (pollIntervalRef.current) {
@@ -64,7 +65,6 @@ function WorkflowForm() {
 
     const fetchAndPoll = async () => {
       if (!runId) return
-
       setIsPolling(true)
       setPollingError(null)
 
@@ -91,10 +91,13 @@ function WorkflowForm() {
       }
     }
 
+    // primer tick inmediato
     fetchAndPoll()
 
+    // limpiar cualquier intervalo previo
     clearPollingInterval()
 
+    // intervalo de polling
     pollIntervalRef.current = setInterval(async () => {
       await fetchAndPoll()
     }, 2000)
@@ -104,17 +107,15 @@ function WorkflowForm() {
     }
   }, [runId])
 
-  // ✅ Solo setea imageUrl cuando el poll indica éxito
+  // ✅ AJUSTE: fijar imageUrl en cuanto aparezca en outputs, sin depender de status
   useEffect(() => {
-    console.log("[poll] Estado actual:", pollingData?.status, "outputs[0].url:", pollingData?.outputs?.[0]?.url)
+    const derivedUrl = pollingData?.outputs?.[0]?.url
+    console.log("[poll] status:", pollingData?.status, "derivedUrl:", derivedUrl)
 
-    if (pollingData?.status === "success") {
-      const output = pollingData.outputs?.[0]
-      if (output?.url) {
-        setImageUrl(output.url)
-      }
+    if (derivedUrl && !imageUrl) {
+      setImageUrl(derivedUrl)
     }
-  }, [pollingData])
+  }, [pollingData, imageUrl])
 
   // ✅ Dispara el email cuando imageUrl está listo (una sola vez por run)
   useEffect(() => {
@@ -185,7 +186,8 @@ function WorkflowForm() {
 
       if (!res.ok) {
         const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
-        const errorDetails = (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
+        const errorDetails =
+          (responseData as any)?.details ? JSON.stringify((responseData as any).details) : "No details"
         throw new Error(`${errorMsg} - ${errorDetails}`)
       }
 
@@ -205,7 +207,7 @@ function WorkflowForm() {
     }
   }
 
-  // Usa las claves que espera tu API (userEmail, userName, imageUrl)
+  // ---- Envío de email al backend ----
   const sendEmailWithImage = async (
     imageUrl: string,
     userEmail: string,
