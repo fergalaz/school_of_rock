@@ -30,7 +30,18 @@ export async function POST(req: NextRequest) {
   try {
     const { imageUrl, userEmail, userName, nombre, apellido, escena } = await req.json()
 
+    // 🔎 Log de entrada
+    console.log("[send-email] incoming payload", {
+      hasUrl: !!imageUrl,
+      userEmail,
+      userName,
+      nombre,
+      apellido,
+      escena,
+    })
+
     if (!imageUrl || !userEmail) {
+      console.warn("[send-email] Falta imageUrl o userEmail, abortando envío")
       return NextResponse.json({ error: "Missing required fields: imageUrl or userEmail" }, { status: 400 })
     }
 
@@ -38,9 +49,10 @@ export async function POST(req: NextRequest) {
     const FROM_EMAIL = process.env.FROM_EMAIL || "School of Rock <rockstar@nube.media>"
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "fgalaz@mstudioprod.com"
 
-    // Descargar imagen para adjunto (si falla, enviamos solo el link)
+    // Descargar imagen para adjunto (si falla, seguimos con link)
     let attachment: { filename: string; content: string } | null = null
     try {
+      console.log("[send-email] Descargando imagen:", imageUrl)
       const resImg = await fetch(imageUrl)
       if (!resImg.ok) throw new Error(`Image fetch failed: ${resImg.status}`)
       const buf = Buffer.from(await resImg.arrayBuffer())
@@ -49,8 +61,10 @@ export async function POST(req: NextRequest) {
         filename: `${firstName}_${lastName || "rockstar"}.${ext}`,
         content: buf.toString("base64"),
       }
+      console.log("[send-email] Imagen descargada correctamente y convertida a base64")
     } catch (e) {
-      attachment = null // fallback: correo sin adjunto, con link
+      console.warn("[send-email] No se pudo adjuntar imagen, se enviará solo link:", (e as Error)?.message)
+      attachment = null
     }
 
     // Correo para usuario
@@ -76,9 +90,7 @@ export async function POST(req: NextRequest) {
         </div>
       `,
     }
-    if (attachment) {
-      userPayload.attachments = [{ filename: attachment.filename, content: attachment.content }]
-    }
+    if (attachment) userPayload.attachments = [{ filename: attachment.filename, content: attachment.content }]
 
     // Correo para admin
     const adminPayload: any = {
@@ -93,14 +105,21 @@ export async function POST(req: NextRequest) {
         </div>
       `,
     }
-    if (attachment) {
-      adminPayload.attachments = [{ filename: attachment.filename, content: attachment.content }]
-    }
+    if (attachment) adminPayload.attachments = [{ filename: attachment.filename, content: attachment.content }]
+
+    console.log("[send-email] Enviando correos vía Resend...")
 
     const [userRes, adminRes] = await Promise.all([
       resend.emails.send(userPayload),
       resend.emails.send(adminPayload),
     ])
+
+    console.log("[send-email] Resend completó envío", {
+      userStatus: (userRes as any)?.data?.id ? "OK" : "ERROR",
+      adminStatus: (adminRes as any)?.data?.id ? "OK" : "ERROR",
+      userId: (userRes as any)?.data?.id ?? null,
+      adminId: (adminRes as any)?.data?.id ?? null,
+    })
 
     return NextResponse.json({
       success: true,
@@ -108,7 +127,7 @@ export async function POST(req: NextRequest) {
       results: [userRes, adminRes],
     })
   } catch (error: any) {
-    console.error("[send-email] Error:", error)
+    console.error("[send-email] Error general:", error)
     return NextResponse.json({ error: "Failed to send email", details: error?.message }, { status: 500 })
   }
 }
