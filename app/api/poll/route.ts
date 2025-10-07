@@ -21,27 +21,39 @@ export async function GET(req: NextRequest) {
 
   const { live_status, status, outputs, progress, queue_position } = json
 
-  // Detecta URL de salida en ambas formas posibles
+  // Extrae una URL válida si está disponible en cualquiera de los dos formatos
   const first = Array.isArray(outputs) ? outputs[0] : undefined
-  const output_url =
-    first?.url ||
-    first?.image || // por si alguna variante trae `image`
-    (Array.isArray(first?.images) ? first?.images?.[0]?.url : undefined)
+  const foundUrl: string | undefined =
+    first?.url || first?.images?.[0]?.url || first?.image?.url
 
-  // Normaliza el estado a "success" si ya hay URL o si viene esa familia de estados
+  // Normaliza: considera éxito si el backend dice success/completed/succeeded O si ya hay URL
   const normalized_status =
-    status === "success" || status === "completed" || status === "succeeded" || !!output_url
+    status === "success" ||
+    status === "completed" ||
+    status === "succeeded" ||
+    !!foundUrl
       ? "success"
       : status
+
+  // Si encontramos una URL pero el objeto original no tenía `url` arriba,
+  // devolvemos un outputs enriquecido para simplificar el frontend.
+  let normalizedOutputs = outputs
+  if (foundUrl && (!first || !first.url)) {
+    normalizedOutputs = [
+      {
+        ...first,
+        url: foundUrl,
+      },
+      ...(Array.isArray(outputs) ? outputs.slice(1) : []),
+    ]
+  }
 
   return NextResponse.json({
     live_status,
     status: normalized_status,
-    outputs,
+    outputs: normalizedOutputs,
     progress,
     queue_position,
-    // ayuda de debug para confirmar qué llegó realmente
     _raw_status: status,
-    _detected_url: output_url ?? null,
   })
 }
