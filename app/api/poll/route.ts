@@ -2,42 +2,23 @@ import { NextRequest, NextResponse } from "next/server"
 
 export const runtime = "nodejs"
 
-// Extrae de forma robusta la primera URL de imagen del arreglo outputs
-function firstImageUrlFromOutputs(outputs: any): string | null {
-  if (!Array.isArray(outputs)) return null
-
-  // 1) Caso común: outputs[0].images[0].url
-  for (const item of outputs) {
-    const imgs = item?.images
-    if (Array.isArray(imgs)) {
-      for (const img of imgs) {
-        if (img?.url && typeof img.url === "string") return img.url
-      }
-    }
-  }
-
-  // 2) Caso alterno: outputs[i].url
-  for (const item of outputs) {
-    if (item?.url && typeof item.url === "string") return item.url
-  }
-
-  // 3) Caso anidado: outputs[i].data.images[].url o outputs[i].data.url
-  for (const item of outputs) {
-    const dataImgs = item?.data?.images
-    if (Array.isArray(dataImgs)) {
-      for (const img of dataImgs) {
-        if (img?.url && typeof img.url === "string") return img.url
-      }
-    }
-    if (item?.data?.url && typeof item.data.url === "string") return item.data.url
-  }
-
-  return null
-}
+// Caché en memoria para evitar dobles envíos por el mismo runId (idempotencia best-effort)
+const sentCache: Set<string> =
+  (globalThis as any).__sentEmailRunIds || new Set<string>()
+;(globalThis as any).__sentEmailRunIds = sentCache
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const runId = searchParams.get("runId")
+
+  // Datos opcionales para el envío server-side
+  const email = searchParams.get("email") || ""
+  const userName = searchParams.get("userName") || ""
+  const nombre = searchParams.get("nombre") || ""
+  const apellido = searchParams.get("apellido") || ""
+  const escena = searchParams.get("escena") || ""
+  // Permite desactivar el envío server-side si algún día lo necesitas (&serverSend=0)
+  const serverSend = (searchParams.get("serverSend") ?? "1") === "1"
 
   if (!runId) {
     return NextResponse.json({ error: "Missing runId" }, { status: 400 })
@@ -47,7 +28,7 @@ export async function GET(req: NextRequest) {
     headers: {
       Authorization: `Bearer ${process.env.COMFY_API_KEY ?? ""}`,
     },
-    // Evita cachear respuestas antiguas
+    // Evitar cachear respuestas antiguas
     cache: "no-store",
   })
 
@@ -56,27 +37,62 @@ export async function GET(req: NextRequest) {
   // Campos originales de ComfyDeploy
   const { live_status, status, outputs, progress, queue_position } = json
 
-  // Detecta primera URL (útil para logs/diagnóstico)
-  const firstUrl = firstImageUrlFromOutputs(outputs)
-
   // Normalización del estado para el frontend
-  // - algunos backends reportan "completed" / "succeeded" cuando terminó OK
-  // - si ya hay una URL de salida, lo tratamos como éxito
+  const hasOutputUrl = Array.isArray(outputs) && !!outputs[0]?.url
   const normalized_status =
-    status === "success" || status === "completed" || status === "succeeded" || !!firstUrl
+    status === "success" || status === "completed" || status === "succeeded" || hasOutputUrl
       ? "success"
       : status
 
-  // 📜 Log visible en Runtime Logs (no expone secretos)
-  console.log("[poll]", {
-    runId,
-    status: normalized_status,
-    live_status,
-    progress,
-    queue_position,
-    firstUrl,
-    _raw_status: status,
-  })
+  // ---- Disparo de email desde el servidor (una vez por runId) ----
+  let emailTriggered = false
+  let emailReason = ""
+
+  if (
+    serverSend &&
+    normalized_status === "success" &&
+    hasOutputUrl &&
+    email && // necesitamos al menos el correo del usuario
+    !sentCache.has(runId) // no repetir por runId en esta instancia
+  ) {
+    try {
+      const imageUrl: string = outputs[0].url
+      const host = req.headers.get("host") || ""
+      const baseUrl = host ? `https://${host}` : ""
+
+      // Hacemos POST a nuestra propia ruta /api/send-email (server-to-server)
+      const r = await fetch(`${baseUrl}/api/send-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl,
+          userEmail: email,
+          userName,
+          nombre,
+          apellido,
+          escena,
+        }),
+        cache: "no-store",
+      })
+
+      if (!r.ok) {
+        emailReason = `send-email returned ${r.status}`
+      } else {
+        sentCache.add(runId)
+        emailTriggered = true
+        emailReason = "sent"
+      }
+    } catch (e: any) {
+      emailReason = `send-email error: ${e?.message || "unknown"}`
+    }
+  } else {
+    // Motivo por el cual no se disparó (útil para debugging en logs)
+    if (!serverSend) emailReason = "serverSend disabled"
+    else if (normalized_status !== "success") emailReason = `status=${normalized_status}`
+    else if (!hasOutputUrl) emailReason = "no output url"
+    else if (!email) emailReason = "missing email"
+    else if (sentCache.has(runId)) emailReason = "already sent for runId"
+  }
 
   return NextResponse.json({
     live_status,
@@ -84,8 +100,11 @@ export async function GET(req: NextRequest) {
     outputs,
     progress,
     queue_position,
-    // Campos solo informativos (tu UI los ignora):
-    _raw_status: status,
-    _first_url: firstUrl,
+    _raw_status: status, // para inspección
+    // Datos de control del envío server-side
+    _server_send: serverSend,
+    _email_triggered: emailTriggered,
+    _email_reason: emailReason,
+    _sent_cache_size: sentCache.size,
   })
 }

@@ -9,58 +9,26 @@ import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, CheckCircle, XCircle, Hourglass, Camera, Upload } from "lucide-react"
 
-type OutputItem = {
-  url?: string
-  images?: Array<{ url?: string }>
-  [key: string]: any
-}
-
 type PollData = {
   live_status?: string
   status?: "queued" | "running" | "success" | "failed" | "api_error"
-  outputs?: OutputItem[]
+  outputs?: Array<{ url?: string; [key: string]: any }>
   progress?: number
   queue_position?: number | null
   error?: any
   details?: any
 }
 
-function firstImageUrlFromOutputs(outputs?: OutputItem[] | null): string | null {
-  if (!outputs || outputs.length === 0) return null
-
-  for (const item of outputs) {
-    const imgs = item?.images
-    if (Array.isArray(imgs)) {
-      for (const img of imgs) {
-        if (img?.url && typeof img.url === "string") return img.url
-      }
-    }
-  }
-
-  for (const item of outputs) {
-    if (item?.url && typeof item.url === "string") return item.url
-  }
-
-  for (const item of outputs) {
-    const dataImgs = item?.data?.images
-    if (Array.isArray(dataImgs)) {
-      for (const img of dataImgs) {
-        if (img?.url && typeof img.url === "string") return img.url
-      }
-    }
-    if (item?.data?.url && typeof item.data.url === "string") return item.data.url
-  }
-
-  return null
-}
-
 function WorkflowForm() {
   const [runId, setRunId] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [mutationError, setMutationError] = useState<string | null>(null)
+
   const [pollingData, setPollingData] = useState<PollData | null>(null)
   const [isPolling, setIsPolling] = useState<boolean>(false)
+  const [pollingError, setPollingError] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
+
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [nombre, setNombre] = useState<string>("")
   const [apellido, setApellido] = useState<string>("")
@@ -70,72 +38,116 @@ function WorkflowForm() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
   const hasSentEmailRef = useRef(false)
 
   useEffect(() => {
-    const clearPolling = () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
+    console.log("[boot] WorkflowForm mounted v3 (serverSend enabled)")
+  }, [])
+
+  useEffect(() => {
+    const clearPollingInterval = () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
       setIsPolling(false)
     }
 
     if (!runId) {
-      clearPolling()
+      clearPollingInterval()
       setPollingData(null)
       return
     }
 
     const fetchAndPoll = async () => {
       if (!runId) return
+
       setIsPolling(true)
+      setPollingError(null)
 
       try {
-        const res = await fetch(`/api/poll?runId=${runId}`)
-        const data: PollData = await res.json()
-        const tickUrl = firstImageUrlFromOutputs(data.outputs)
-        console.log("[poll tick]", data.status, "url:", tickUrl)
-        setPollingData(data)
-        if (data.status === "success" || data.status === "failed") clearPolling()
+        // 🔧 Incluimos los datos del usuario para el envío server-side
+        const params = new URLSearchParams({
+          runId,
+          email,
+          userName: `${nombre} ${apellido}`.trim(),
+          nombre,
+          apellido,
+          escena,
+          serverSend: "1",
+        })
+
+        const response = await fetch(`/api/poll?${params.toString()}`)
+        const data: PollData = await response.json()
+
+        console.log("[poll tick]", data.status, data.outputs?.[0]?.url)
+
+        if (!response.ok) {
+          const errorMsg = (data as any)?.error || `Poll API Error: ${response.status}`
+          setPollingError(errorMsg)
+          setPollingData({ ...data, status: "api_error", live_status: errorMsg })
+        } else {
+          setPollingData(data)
+        }
+
+        if (data.status === "success" || data.status === "failed") {
+          clearPollingInterval()
+        }
       } catch (err: any) {
-        console.error("Polling failed:", err)
+        setPollingError(err.message || "Polling failed unexpectedly.")
       }
     }
 
     fetchAndPoll()
+
+    clearPollingInterval()
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
-    return () => clearPolling()
-  }, [runId])
+
+    return () => {
+      clearPollingInterval()
+    }
+  }, [runId, email, nombre, apellido, escena])
 
   useEffect(() => {
-    const url = firstImageUrlFromOutputs(pollingData?.outputs)
-    if (pollingData?.status === "success" && url) setImageUrl(url)
+    if (pollingData?.status === "success") {
+      const output = pollingData.outputs?.[0]
+      if (output?.url) setImageUrl(output.url)
+    }
   }, [pollingData])
-
-  useEffect(() => {
-    if (!imageUrl || hasSentEmailRef.current || !email) return
-    hasSentEmailRef.current = true
-    const userName = `${nombre} ${apellido}`.trim()
-    sendEmailWithImage(imageUrl, email, userName, escena)
-  }, [imageUrl, email, nombre, apellido, escena])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       const reader = new FileReader()
-      reader.onloadend = () => setUploadedImage(reader.result as string)
+      reader.onloadend = () => {
+        setUploadedImage(reader.result as string)
+      }
       reader.readAsDataURL(file)
     }
   }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    const inputs = { imagen: uploadedImage || "", nombre, apellido, escena, email }
 
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+    const inputs = {
+      imagen: uploadedImage || "",
+      nombre,
+      apellido,
+      escena,
+      email,
+    }
+
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
     setRunId(null)
     setImageUrl(null)
     setMutationError(null)
     setPollingData(null)
+    setIsPolling(false)
+    setPollingError(null)
     setIsGenerating(true)
     hasSentEmailRef.current = false
 
@@ -145,27 +157,22 @@ function WorkflowForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(inputs),
       })
-      const data = await res.json()
-      if (res.ok && data.run_id) setRunId(data.run_id)
-      else setMutationError(`Error: ${data.error || "run_id missing"}`)
-    } catch (err: any) {
-      setMutationError(err.message)
+      const responseData = await res.json()
+
+      if (!res.ok) {
+        const errorMsg = (responseData as any)?.error || `API Error: ${res.status}`
+        throw new Error(errorMsg)
+      }
+
+      if (responseData.run_id) {
+        setRunId(responseData.run_id)
+      } else {
+        setMutationError("Failed to start run: run_id missing.")
+      }
+    } catch (error: any) {
+      setMutationError(error.message)
     } finally {
       setIsGenerating(false)
-    }
-  }
-
-  const sendEmailWithImage = async (imageUrl: string, userEmail: string, userName: string, escenaSeleccionada?: string) => {
-    try {
-      console.log("[send-email]", { imageUrl, userEmail, userName, escenaSeleccionada })
-      const response = await fetch("/api/send-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl, userEmail, userName, escena: escenaSeleccionada }),
-      })
-      console.log("[send-email] status:", response.status)
-    } catch (error) {
-      console.error("[send-email] Error:", error)
     }
   }
 
@@ -191,45 +198,74 @@ function WorkflowForm() {
               <div className="flex flex-col gap-2">
                 <Label htmlFor="imagen">Sube una selfie</Label>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => cameraInputRef.current?.click()}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 bg-transparent"
+                    onClick={() => cameraInputRef.current?.click()}
+                  >
                     <Camera className="mr-2 h-4 w-4" />
                     Tomar Foto
                   </Button>
-                  <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => fileInputRef.current?.click()}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 bg-transparent"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
                     <Upload className="mr-2 h-4 w-4" />
                     Subir Archivo
                   </Button>
                 </div>
-                <input ref={cameraInputRef} type="file" accept="image/*" capture="user" className="hidden" onChange={handleFileUpload} />
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="user"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
                 {uploadedImage && (
                   <div className="mt-2 flex justify-center">
-                    <img src={uploadedImage || "/placeholder.svg"} alt="Uploaded selfie" className="max-h-48 rounded-md border shadow-sm" />
+                    <img
+                      src={uploadedImage || "/placeholder.svg"}
+                      alt="Uploaded selfie"
+                      className="max-h-48 rounded-md border shadow-sm"
+                    />
                   </div>
                 )}
               </div>
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="nombre">Nombre</Label>
-                <Input id="nombre" name="nombre" placeholder="Ingresa tu nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+                <Input
+                  id="nombre"
+                  name="nombre"
+                  placeholder="Ingresa tu nombre"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  required
+                />
               </div>
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="apellido">Apellido</Label>
-                <Input id="apellido" name="apellido" placeholder="Ingresa tu apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} required />
+                <Input
+                  id="apellido"
+                  name="apellido"
+                  placeholder="Ingresa tu apellido"
+                  value={apellido}
+                  onChange={(e) => setApellido(e.target.value)}
+                  required
+                />
               </div>
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="escena">¿Qué instrumento vas a tocar?</Label>
-                <Select
-                  value={escena}
-                  onValueChange={(val) => {
-                    const clean = val.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-                    setEscena(clean)
-                  }}
-                >
+                <Select value={escena} onValueChange={setEscena}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Selecciona una escena" />
+                    <SelectValue placeholder="Selecciona un instrumento" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="teclado">Teclado</SelectItem>
@@ -242,7 +278,15 @@ function WorkflowForm() {
 
               <div className="flex flex-col gap-2">
                 <Label htmlFor="email">Email</Label>
-                <Input id="email" name="email" type="email" placeholder="Ingresa tu email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  placeholder="Ingresa tu email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
               </div>
 
               <div className="flex justify-end">
@@ -259,14 +303,17 @@ function WorkflowForm() {
               </div>
             </form>
 
-            {mutationError && <div className="mt-4 text-center text-sm font-medium text-red-600">Error: {mutationError}</div>}
+            {mutationError && (
+              <div className="mt-4 text-center text-sm font-medium text-red-600">Error: {mutationError}</div>
+            )}
 
-            {(overallIsLoading || displayStatus) && (
+            {(overallIsLoading || displayStatus) && !mutationError && (
               <div className="mt-6 flex flex-col items-center gap-2">
                 {displayStatus && (
                   <div className="flex items-center justify-center gap-2 text-sm capitalize text-muted-foreground">
                     {displayStatus === "queued" && <Hourglass className="h-4 w-4 animate-pulse text-amber-500" />}
                     {displayStatus === "running" && <Loader2 className="h-4 w-4 animate-spin text-blue-500" />}
+                    {displayStatus === "api_error" && <XCircle className="h-4 w-4 text-orange-500" />}
                     {displayStatus === "success" && <CheckCircle className="h-4 w-4 text-green-500" />}
                     {displayStatus === "failed" && <XCircle className="h-4 w-4 text-red-500" />}
                     <span>Status: {pollingData?.live_status || displayStatus}</span>
@@ -275,9 +322,17 @@ function WorkflowForm() {
               </div>
             )}
 
+            {pollingError && !mutationError && (
+              <div className="mt-4 text-center text-sm text-red-600">Polling Error: {pollingError}</div>
+            )}
+
             {imageUrl && (
               <div className="mt-6 flex justify-center">
-                <img src={imageUrl} alt="Generated output" className="max-w-full rounded-md border shadow-sm" />
+                <img
+                  src={imageUrl || "/placeholder.svg"}
+                  alt="Generated output"
+                  className="max-w-full rounded-md border shadow-sm"
+                />
               </div>
             )}
           </CardContent>
