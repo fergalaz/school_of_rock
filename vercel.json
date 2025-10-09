@@ -1,0 +1,11 @@
+{
+  "crons": [
+    {
+      "path": "/api/check-pending",
+      "schedule": "* * * * *",
+      "headers": {
+        "Authorization": "Bearer paranguatirimicuaro_2025"
+      }
+    }
+  ]
+}

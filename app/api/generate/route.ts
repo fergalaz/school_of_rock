@@ -1,26 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
+import { kv } from "@/lib/kv"
 
 export const runtime = "nodejs"
 
 export async function POST(req: NextRequest) {
   try {
-    // Cuerpo enviado desde el cliente
     const body = await req.json().catch(() => ({} as any))
+    const { nombre, apellido, email, imagen, escena } = body ?? {}
 
-    // Extraemos SOLO lo que el workflow necesita
-    const { nombre, imagen, escena } = body ?? {}
-
-    // Validaciones mínimas (ajústalas si necesitas)
     if (!imagen) {
-      return NextResponse.json(
-        { error: "Falta 'imagen' en el payload" },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: "Falta 'imagen' en el payload" }, { status: 400 })
     }
-    // nombre/escena pueden ser opcionales dependiendo del workflow;
-    // si quieres forzarlos, descomenta:
-    // if (!nombre) return NextResponse.json({ error: "Falta 'nombre'" }, { status: 400 })
-    // if (!escena) return NextResponse.json({ error: "Falta 'escena'" }, { status: 400 })
 
     const apiKey = process.env.COMFY_API_KEY ?? ""
     if (!apiKey) {
@@ -30,11 +20,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Mantengo tu deployment_id
     const DEPLOYMENT_ID = "a0fe4004-6878-487a-ae30-b05a60821ba1"
 
-    // Construimos exactamente los inputs que consume tu workflow
-    const comfyInputs = { nombre, imagen, escena }
+    const comfyInputs = { nombre, apellido, email, escena, imagen }
 
     const res = await fetch("https://api.comfydeploy.com/api/run/deployment/queue", {
       method: "POST",
@@ -46,14 +34,12 @@ export async function POST(req: NextRequest) {
         deployment_id: DEPLOYMENT_ID,
         inputs: comfyInputs,
       }),
-      // Evita respuestas cacheadas entre runs
       cache: "no-store",
     })
 
     const data = await res.json().catch(() => ({}))
 
     if (!res.ok) {
-      // Propaga info útil cuando ComfyDeploy rechaza
       return NextResponse.json(
         { error: data?.error || "ComfyDeploy queue error", details: data },
         { status: res.status }
@@ -67,9 +53,27 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Devuelve tal cual (incluye run_id)
+    // ✅ Guarda el run en KV para seguimiento automático por el cron
+    try {
+      const record = {
+        run_id: data.run_id,
+        nombre,
+        apellido,
+        email,
+        escena,
+        createdAt: Date.now(),
+      }
+      await kv.hset(`run:${data.run_id}`, record)
+      await kv.sadd("runs:pending", data.run_id)
+      console.log("[generate] Run registrado en KV:", record)
+    } catch (kvError) {
+      console.error("[generate] Error guardando en KV:", kvError)
+    }
+
+    // Devuelve la respuesta original
     return NextResponse.json(data, { status: 200 })
   } catch (err: any) {
+    console.error("[generate] Error general:", err)
     return NextResponse.json(
       { error: "Fallo al encolar la generación", details: err?.message || String(err) },
       { status: 500 }
