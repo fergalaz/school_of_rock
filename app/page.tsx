@@ -9,6 +9,9 @@ import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, CheckCircle, XCircle, Hourglass, Camera, Upload } from "lucide-react"
 
+/* ============================================================
+   Tipos
+============================================================ */
 type OutputItem = {
   url?: string
   images?: Array<{ url?: string }>
@@ -25,6 +28,9 @@ type PollData = {
   details?: any
 }
 
+/* ============================================================
+   Utilidades para outputs
+============================================================ */
 function firstImageUrlFromOutputs(outputs?: OutputItem[] | null): string | null {
   if (!outputs || outputs.length === 0) return null
 
@@ -54,6 +60,53 @@ function firstImageUrlFromOutputs(outputs?: OutputItem[] | null): string | null 
   return null
 }
 
+/* ============================================================
+   NUEVAS UTILIDADES PARA COMPRESIÓN DE IMAGEN
+============================================================ */
+async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error("No se pudo decodificar la imagen"))
+      img.src = reader.result as string
+    }
+    reader.onerror = () => reject(new Error("No se pudo leer el archivo"))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function compressToJpegUnder1MB(file: File, maxBytes = 1_000_000): Promise<string> {
+  const img = await loadImageFromFile(file)
+
+  const maxSide = 2000
+  const { width, height } = img
+  const scale = Math.min(1, maxSide / Math.max(width, height))
+  const targetW = Math.round(width * scale)
+  const targetH = Math.round(height * scale)
+
+  const canvas = document.createElement("canvas")
+  const ctx = canvas.getContext("2d")
+  if (!ctx) throw new Error("No se pudo crear el contexto 2D")
+
+  canvas.width = targetW
+  canvas.height = targetH
+  ctx.drawImage(img, 0, 0, targetW, targetH)
+
+  const qualities = [0.9, 0.85, 0.8, 0.75, 0.7]
+  for (const q of qualities) {
+    const dataUrl = canvas.toDataURL("image/jpeg", q)
+    const sizeBytes = Math.ceil((dataUrl.length - "data:image/jpeg;base64,".length) * 3 / 4)
+    if (sizeBytes <= maxBytes) return dataUrl
+  }
+
+  return canvas.toDataURL("image/jpeg", qualities[qualities.length - 1])
+}
+
+/* ============================================================
+   Componente principal
+============================================================ */
 function WorkflowForm() {
   const [runId, setRunId] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
@@ -72,6 +125,7 @@ function WorkflowForm() {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const hasSentEmailRef = useRef(false)
 
+  /* ---------------------- Polling ---------------------- */
   useEffect(() => {
     const clearPolling = () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
@@ -88,7 +142,6 @@ function WorkflowForm() {
     const fetchAndPoll = async () => {
       if (!runId) return
       setIsPolling(true)
-
       try {
         const res = await fetch(`/api/poll?runId=${runId}`)
         const data: PollData = await res.json()
@@ -118,15 +171,29 @@ function WorkflowForm() {
     sendEmailWithImage(imageUrl, email, userName, escena)
   }, [imageUrl, email, nombre, apellido, escena])
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /* ---------------------- NUEVO handleFileUpload ---------------------- */
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onloadend = () => setUploadedImage(reader.result as string)
-      reader.readAsDataURL(file)
+    if (!file) return
+
+    try {
+      const compressedDataUrl = await compressToJpegUnder1MB(file)
+      if (!compressedDataUrl.startsWith("data:image/jpeg")) {
+        throw new Error("Formato no válido tras compresión")
+      }
+      setUploadedImage(compressedDataUrl)
+    } catch (err: any) {
+      console.error("[upload] Error al procesar imagen:", err?.message || err)
+      alert(
+        "No pudimos procesar la foto. En iPhone, en Cámara > Formatos, usa 'Más compatible', " +
+          "o sube la imagen desde tu galería. También puedes probar con PNG/JPG."
+      )
+    } finally {
+      e.target.value = ""
     }
   }
 
+  /* ---------------------- Envío de formulario ---------------------- */
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const inputs = { imagen: uploadedImage || "", nombre, apellido, escena, email }
@@ -173,6 +240,9 @@ function WorkflowForm() {
   const overallIsLoading =
     isGenerating || (isPolling && !!runId && displayStatus !== "success" && displayStatus !== "failed")
 
+  /* ============================================================
+     UI
+  ============================================================ */
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
       <div className="flex w-full max-w-xl flex-col gap-6">
@@ -188,6 +258,7 @@ function WorkflowForm() {
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+              {/* --- Selfie --- */}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="imagen">Sube una selfie</Label>
                 <div className="flex gap-2">
@@ -200,8 +271,17 @@ function WorkflowForm() {
                     Subir Archivo
                   </Button>
                 </div>
-                <input ref={cameraInputRef} type="file" accept="image/*" capture="user" className="hidden" onChange={handleFileUpload} />
+
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+
                 {uploadedImage && (
                   <div className="mt-2 flex justify-center">
                     <img src={uploadedImage || "/placeholder.svg"} alt="Uploaded selfie" className="max-h-48 rounded-md border shadow-sm" />
@@ -209,16 +289,19 @@ function WorkflowForm() {
                 )}
               </div>
 
+              {/* --- Nombre --- */}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="nombre">Nombre</Label>
                 <Input id="nombre" name="nombre" placeholder="Ingresa tu nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} required />
               </div>
 
+              {/* --- Apellido --- */}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="apellido">Apellido</Label>
                 <Input id="apellido" name="apellido" placeholder="Ingresa tu apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} required />
               </div>
 
+              {/* --- Escena --- */}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="escena">¿Qué instrumento vas a tocar?</Label>
                 <Select
@@ -240,11 +323,13 @@ function WorkflowForm() {
                 </Select>
               </div>
 
+              {/* --- Email --- */}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" name="email" type="email" placeholder="Ingresa tu email" value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
 
+              {/* --- Botón --- */}
               <div className="flex justify-end">
                 <Button type="submit" size="sm" disabled={isGenerating || !uploadedImage}>
                   {isGenerating ? (
