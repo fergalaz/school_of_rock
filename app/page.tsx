@@ -249,7 +249,6 @@ function WorkflowForm() {
         <div className="flex flex-col items-center gap-4 text-center">
           <h1 className="text-3xl font-bold">Bienvenidos a</h1>
           <img src="/images/school-of-rock-logo.png" alt="School of Rock" className="w-full max-w-md" />
-          <p className="text-lg font-medium text-muted-foreground">by Sexto Básico - Coyancura</p>
         </div>
 
         <Card className="w-full border shadow-sm">
